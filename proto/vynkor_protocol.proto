@@ -2,6 +2,9 @@ syntax = "proto3";
 
 package vynkor;
 
+// v 1.7  (E-01: per-device credentials — DeviceState gains REVOKED;
+//         DeviceInfo gains created/expires unix-millis for the pairing
+//         lifecycle surface. All additive.)
 // v 1.6  (D-01: device identity + versioning + user_id + tool schema —
 //         PluginRegister gains device/os/version/capabilities/protocol_version/
 //         user_id; PluginManifest gains platforms[]/action_specs[]; new
@@ -118,6 +121,9 @@ enum DeviceState {
   DEVICE_STATE_UNSPECIFIED = 0;
   DEVICE_STATE_ONLINE      = 1;
   DEVICE_STATE_OFFLINE     = 2;
+  // E-01 (v1.7): host revoked this device's credential; registration and WS
+  // upgrade reject it until it re-pairs.
+  DEVICE_STATE_REVOKED     = 3;
 }
 
 // Registry/discovery record — the kernel stores one per device_id (D-02) and
@@ -131,6 +137,10 @@ message DeviceInfo {
   repeated string capabilities = 5;
   uint64          last_seen    = 6;  // unix millis of the last ping/pong
   DeviceState     state        = 7;
+  // E-01 (v1.7): pairing lifecycle, unix millis; 0 = unknown (a device that
+  // registered without pairing carries no credential row).
+  uint64          created      = 8;
+  uint64          expires      = 9;
 }
 
 
