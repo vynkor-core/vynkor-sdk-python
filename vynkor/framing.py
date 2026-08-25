@@ -127,12 +127,17 @@ def pack_frame(
     payload: bytes,
     flags: int = 0,
     session_key: Optional[bytes] = None,
+    compress: bool = True,
 ) -> bytes:
     """Encode one outbound frame. Mirrors vynkor-wire's write_frame_raw:
     MAC is computed over the *plaintext* header+payload first, then payloads
     >= COMPRESS_THRESHOLD (and not already compressed / raw binary) are
     zstd-compressed at level 3; CRC32 covers the wire (possibly compressed)
-    bytes."""
+    bytes.
+
+    ``compress=False`` disables zstd (for WebSocket transport — the gateway
+    rejects FLAG_COMPRESSED inbound, so the WS path never compresses).
+    """
     if len(payload) > MAX_PAYLOAD:
         raise VeyronPayloadTooLarge(len(payload))
     if session_key is not None:
@@ -148,7 +153,8 @@ def pack_frame(
     wire_payload = payload
     wire_flags = flags
     if (
-        len(payload) >= COMPRESS_THRESHOLD
+        compress
+        and len(payload) >= COMPRESS_THRESHOLD
         and not (flags & FLAG_COMPRESSED)
         and not (flags & FLAG_RAW_BINARY)
     ):
@@ -208,6 +214,45 @@ def read_frame(stream, session_key: Optional[bytes] = None) -> bytes:
     elif session_key is not None:
         raise VeyronInternal("MAC missing on secured connection")
     return payload
+
+
+def read_frame_from_bytes(data: bytes, session_key: Optional[bytes] = None):
+    """Parse one frame from a complete ``bytes`` blob (one WebSocket binary
+    message). Returns ``(flags, payload)`` with ``FLAG_COMPRESSED`` already
+    normalized but ``FLAG_FRAGMENTED``/``FLAG_RAW_BINARY`` preserved.
+
+    Mirrors the Rust WS ``Transport::read_frame`` path which does
+    ``read_frame(&mut cursor)`` over the binary message.
+    """
+    import io
+
+    stream = io.BytesIO(data)
+    header_bytes = stream.read(HEADER_SIZE)
+    if len(header_bytes) < HEADER_SIZE:
+        raise VeyronIoError("truncated frame header")
+    magic, flags, length, target_bytes, stored_crc = struct.unpack(HEADER_FMT, header_bytes)
+    if magic != MAGIC:
+        raise VeyronFrameMagicMismatch()
+    if length > MAX_PAYLOAD:
+        raise VeyronPayloadTooLarge(length)
+    payload = stream.read(length) if length > 0 else b""
+    if len(payload) < length:
+        raise VeyronIoError("truncated frame payload")
+    computed = crc32(payload) & 0xFFFFFFFF
+    if computed != stored_crc:
+        raise VeyronFrameCrcMismatch()
+
+    flags, header_bytes2, payload = _normalize(flags, target_bytes, payload)
+
+    if flags & FLAG_MAC_PRESENT:
+        tag = stream.read(32)
+        if len(tag) < 32:
+            raise VeyronIoError("truncated MAC tag")
+        if session_key is not None and not verify_tag(session_key, header_bytes2, payload, tag):
+            raise VeyronInternal("frame MAC verification failed")
+    elif session_key is not None:
+        raise VeyronInternal("MAC missing on secured connection")
+    return flags, payload
 
 
 async def async_read_frame(

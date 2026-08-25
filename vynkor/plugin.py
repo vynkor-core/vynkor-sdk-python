@@ -1,3 +1,10 @@
+"""The Plugin base class: implement it, call ``Plugin.run()``, and the SDK
+handles connection, registration, auth, the receive loop, Ping/Pong,
+event acknowledgement, and graceful shutdown.
+
+Mirrors ``vynkor-sdk/src/plugin.rs`` 1:1.
+"""
+
 import asyncio
 import os
 import time
@@ -27,21 +34,21 @@ def _default_socket_path() -> str:
 
 
 class Plugin:
-    """Base class for Veyron plugins. Only `id` and `on_message` are mandatory;
-    everything else has a sensible default. Mirrors the Rust `Plugin` trait.
+    """Base class for Vynkor plugins. Only ``id`` and ``on_message`` are mandatory;
+    everything else has a sensible default. Mirrors the Rust ``Plugin`` trait.
 
-    Lifecycle driven by `run` / `run_with` / `serve`:
+    Lifecycle driven by ``run`` / ``run_with`` / ``run_ws`` / ``serve``:
 
-    1. Connect to the kernel socket (`VYN_SOCKET_PATH` or the per-user
-       default; never the shared world-writable `/tmp`).
-    2. Register, presenting `VYN_JWT_TOKEN` if set. When
-       `VYN_JWT_SECRET` is also set, all subsequent frames carry an
+    1. Connect to the kernel socket (``VYN_SOCKET_PATH`` or the per-user
+       default; never the shared world-writable ``/tmp``).
+    2. Register, presenting ``VYN_JWT_TOKEN`` if set. When
+       ``VYN_JWT_SECRET`` is also set, all subsequent frames carry an
        HMAC-SHA256 tag.
-    3. Call `on_init`.
-    4. Receive loop: Ping is answered automatically; `PluginShutdown` exits
-       the loop; Events are passed to `on_event` and acknowledged when it
-       returns successfully; everything else goes to `on_message`.
-    5. Call `on_shutdown`.
+    3. Call ``on_init``.
+    4. Receive loop: Ping is answered automatically; ``PluginShutdown`` exits
+       the loop; Events are passed to ``on_event`` and acknowledged when it
+       returns successfully; everything else goes to ``on_message``.
+    5. Call ``on_shutdown``.
     """
 
     def __init__(self) -> None:
@@ -50,7 +57,7 @@ class Plugin:
 
     def id(self) -> str:
         """Unique plugin id, e.g. "weather". Override, or set the legacy
-        `plugin_id` class attribute."""
+        ``plugin_id`` class attribute."""
         val = getattr(self, "plugin_id", None)
         if val:
             return val
@@ -64,7 +71,7 @@ class Plugin:
 
     def manifest(self) -> PluginManifest:
         """Declared capabilities: permissions, actions, event subscriptions,
-        IPC targets. Override, or set the legacy `manifest` class attribute."""
+        IPC targets. Override, or set the legacy ``manifest`` class attribute."""
         val = getattr(type(self), "manifest", None)
         # legacy class-attribute style shadows the method; accept it as fallback
         if val is not None and not callable(val):
@@ -93,13 +100,13 @@ class Plugin:
 
     async def run(self) -> None:
         """Connect, register and serve until shutdown. Socket path comes from
-        `VYN_SOCKET_PATH`, falling back to the per-user default."""
+        ``VYN_SOCKET_PATH``, falling back to the per-user default."""
         socket_path = os.environ.get("VYN_SOCKET_PATH") or _default_socket_path()
         await self.run_with(socket_path)
 
     async def run_with(self, socket_path: str) -> None:
-        """Like `run` against an explicit socket path. JWT credentials are
-        still read from `VYN_JWT_TOKEN` / `VYN_JWT_SECRET`."""
+        """Like ``run`` against an explicit socket path. JWT credentials are
+        still read from ``VYN_JWT_TOKEN`` / ``VYN_JWT_SECRET``."""
         token = os.environ.get("VYN_JWT_TOKEN", "")
         secret = os.environ.get("VYN_JWT_SECRET")
         if secret:
@@ -111,9 +118,28 @@ class Plugin:
         finally:
             await client.close()
 
+    async def run_ws(self, url: str) -> None:
+        """Connect to a kernel WebSocket gateway (D-05), register and serve
+        until shutdown — the WS mirror of :meth:`run_with` for remote devices.
+        JWT credentials come from the same env vars as the UDS path
+        (``VYN_JWT_TOKEN`` / ``VYN_JWT_SECRET``); the token is presented both
+        in the ``Sec-WebSocket-Protocol`` handshake header and in the
+        registration envelope.
+
+        Mirrors ``Plugin::run_ws`` in the Rust SDK.
+        """
+        token = os.environ.get("VYN_JWT_TOKEN", "")
+        secret = os.environ.get("VYN_JWT_SECRET")
+        secret_bytes = secret.encode() if secret else None
+        client = await VynkorClient.connect_ws(url, token, secret_bytes)
+        try:
+            await self.serve(client, token)
+        finally:
+            await client.close()
+
     async def serve(self, client: VynkorClient, jwt_token: str) -> None:
         """Register on an existing client and run the receive loop. Building
-        block for `run`; also useful in tests."""
+        block for ``run``; also useful in tests."""
         self._client = client
         ack = await client.register_full(self.id(), self.version(), self.manifest(), jwt_token)
         if not ack.accepted:
@@ -131,7 +157,7 @@ class Plugin:
         # A handler error ends the receive loop (see on_shutdown's contract):
         # it's the plugin signalling a fatal condition. Captured here so it
         # propagates out of serve() after on_shutdown() runs, instead of being
-        # silently swallowed by the `break` (mirrors the Rust SDK's serve()).
+        # silently swallowed by the ``break`` (mirrors the Rust SDK's serve()).
         handler_err: Optional[BaseException] = None
         try:
             while True:

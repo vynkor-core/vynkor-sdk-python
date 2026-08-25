@@ -1,3 +1,19 @@
+"""Async client for the Vynkor kernel IPC socket.
+
+Speaks the full Vynkor wire protocol over two transports:
+
+- **UDS** (default) — Unix domain socket via :meth:`VynkorClient.connect` /
+  :meth:`VynkorClient.connect_with_secret`.
+- **WebSocket** — the kernel's WS gateway (``ws://host:port/ws``) via
+  :meth:`VynkorClient.connect_ws`, for remote devices (D-05). Registration,
+  frame-MAC enable and reconnect mirror the UDS client exactly; the only
+  differences are dictated by the gateway (R5-03): outbound frames are never
+  zstd-compressed and never fragmented, while ``FLAG_RAW_BINARY`` passes
+  unchanged.
+
+Mirrors ``vynkor-sdk/src/client.rs`` 1:1.
+"""
+
 import asyncio
 import itertools
 import os
@@ -12,6 +28,7 @@ from .errors import (
 )
 from .framing import (
     FLAG_FRAGMENTED,
+    FLAG_MAC_PRESENT,
     FLAG_RAW_BINARY,
     FRAG_HEADER_SIZE,
     MAX_PAYLOAD,
@@ -20,6 +37,7 @@ from .framing import (
     pack_frag_header,
     pack_frame,
     parse_frag_header,
+    read_frame_from_bytes,
 )
 from .vynkor_protocol_pb2 import (
     ActionRequest,
@@ -78,20 +96,24 @@ class _ReassemblyBuf:
 
 
 class VynkorClient:
-    """Async client for the Veyron kernel IPC protocol.
+    """Async connection to the Vynkor kernel over a Unix domain socket or a
+    WebSocket.
 
-    Construct with the classmethods [`connect`], [`connect_with_secret`] and
-    [`connect_from_env`] (mirroring the Rust SDK), or the classic
-    `VynkorClient(socket_path) + await client.connect()` pattern, then
-    [`register`] / [`register_full`] before any other traffic.
+    Create with :meth:`VynkorClient.connect` /
+    :meth:`VynkorClient.connect_with_secret` (UDS, no auth / secured) or
+    :meth:`VynkorClient.connect_ws` (the kernel's WS gateway, e.g. for
+    remote devices), then call :meth:`register` /
+    :meth:`register_with_token` before any other traffic.
     """
 
-    def __init__(self, socket_path: str, secret: Optional[bytes] = None):
+    def __init__(self, socket_path: str = "", secret: Optional[bytes] = None):
         self.socket_path = socket_path
         self._secret = secret
         self.session_key: Optional[bytes] = None
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
+        self._ws = None  # websockets.WebSocketClientProtocol when on WS
+        self._transport: str = "uds"  # "uds" or "ws"
         self.plugin_id: Optional[str] = None
         self._reassembly: dict[int, _ReassemblyBuf] = {}
         self._next_stream_id = 1
@@ -101,19 +123,20 @@ class VynkorClient:
     async def connect(self, socket_path: Optional[str] = None) -> Optional["VynkorClient"]:
         """Open the connection. Two forms:
 
-        - instance: `c = VynkorClient(path); await c.connect()` (returns None)
-        - class:    `c = await VynkorClient.connect(path)` (returns a connected client)
+        - instance: ``c = VynkorClient(path); await c.connect()`` (returns None)
+        - class:    ``c = await VynkorClient.connect(path)`` (returns a connected client)
 
-        Mirrors Rust's `VynkorClient::connect(socket_path)` constructor while
+        Mirrors Rust's ``VynkorClient::connect(socket_path)`` constructor while
         keeping the historical instance-level pattern working.
         """
         if isinstance(self, VynkorClient):
             if socket_path is not None:
                 self.socket_path = socket_path
             self._reader, self._writer = await asyncio.open_unix_connection(self.socket_path)
+            self._transport = "uds"
             return None
-        # Class form: `self` is actually the socket path string.
-        return await VynkorClient.connect_with_secret(self, None)
+        # Class form: ``self`` is actually the socket path string.
+        return await VynkorClient.connect_with_secret(self, None)  # type: ignore[arg-type]
 
     @classmethod
     async def connect_with_secret(
@@ -121,12 +144,13 @@ class VynkorClient:
     ) -> "VynkorClient":
         client = cls(socket_path, secret=secret)
         client._reader, client._writer = await asyncio.open_unix_connection(socket_path)
+        client._transport = "uds"
         return client
 
     @classmethod
     async def connect_from_env(cls) -> "VynkorClient":
-        """Connect using VYN_SOCKET_PATH (falling back to the per-user
-        default) and VYN_JWT_SECRET (optional; enables frame MACs)."""
+        """Connect using ``VYN_SOCKET_PATH`` (falling back to the per-user
+        default) and ``VYN_JWT_SECRET`` (optional; enables frame MACs)."""
         from .plugin import _default_socket_path
 
         socket_path = os.environ.get("VYN_SOCKET_PATH") or _default_socket_path()
@@ -137,25 +161,87 @@ class VynkorClient:
 
     @classmethod
     def from_stream(cls, reader, writer, secret: Optional[bytes] = None) -> "VynkorClient":
-        """Wrap an existing (reader, writer) asyncio stream pair. Useful for
-        tests (`socket.socketpair()`) and custom transports."""
+        """Wrap an existing ``(reader, writer)`` asyncio stream pair. Useful for
+        tests (``socket.socketpair()``) and custom transports."""
         client = cls("", secret=secret)
         client._reader = reader
         client._writer = writer
+        client._transport = "uds"
+        return client
+
+    @classmethod
+    async def connect_ws(
+        cls, url: str, jwt_token: str = "", secret: Optional[bytes] = None
+    ) -> "VynkorClient":
+        """Connect to the kernel's WebSocket gateway (D-05). ``url`` is a
+        ``ws://`` or ``wss://`` endpoint, normally ``ws://<host>:<port>/ws``.
+
+        The client always offers the ``vynkor`` subprotocol (the gateway's
+        handshake marker). ``jwt_token``, when non-empty, is appended to it in
+        the ``Sec-WebSocket-Protocol: vynkor, <jwt>`` header — the gateway's
+        only channel for the token; never put tokens in the URL, they leak
+        into access logs. Pass the same token to :meth:`register_full`; a
+        non-empty token is required on secured kernels. ``secret`` enables
+        frame MACs after registration, exactly like
+        :meth:`connect_with_secret` on UDS.
+
+        On a dropped connection the client is left in its last state;
+        reconnect by calling ``connect_ws`` again and re-registering — the
+        session key is re-derived from the fresh nonce in the new ack
+        (mirrors the UDS client).
+        """
+        try:
+            import websockets
+            import websockets.exceptions
+        except ImportError as e:
+            raise VeyronInternal(
+                "websockets package required for WebSocket transport: pip install vynkor-sdk[websockets] or websockets>=12"
+            ) from e
+
+        protocol = "vynkor" if not jwt_token else f"vynkor, {jwt_token}"
+
+        # websockets 12+ uses additional_headers, older uses extra_headers
+        connect_kwargs: dict = {}
+        # Try modern API first
+        try:
+            ws = await websockets.connect(url, additional_headers={"Sec-WebSocket-Protocol": protocol})  # type: ignore[call-arg]
+        except TypeError:
+            try:
+                ws = await websockets.connect(url, extra_headers={"Sec-WebSocket-Protocol": protocol})  # type: ignore[call-arg]
+            except TypeError:
+                # Fallback: websockets 13+ may use different param
+                ws = await websockets.connect(url)  # type: ignore[call-arg]
+
+        client = cls(url, secret=secret)
+        client._ws = ws
+        client._transport = "ws"
+        # store protocol for introspection
+        client._ws_protocol = protocol  # type: ignore[attr-defined]
         return client
 
     async def close(self) -> None:
+        if self._transport == "ws" and self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
         if self._writer:
             self._writer.close()
             try:
                 await self._writer.wait_closed()
             except (ConnectionError, OSError):
                 pass
+            self._writer = None
+            self._reader = None
 
     def is_secured(self) -> bool:
         """True once a secured registration has derived the per-connection
         MAC key."""
         return self.session_key is not None
+
+    def _is_ws(self) -> bool:
+        return self._transport == "ws"
 
     def _apply_session_nonce(self, plugin_id: str, nonce: bytes) -> None:
         """Derive and store session_key from a registration nonce."""
@@ -211,17 +297,39 @@ class VynkorClient:
     async def send_raw_with_flags(self, target: str, extra_flags: int, payload: bytes) -> None:
         """Send a raw payload with explicit extra flags ORed into the frame
         header (e.g. FLAG_RAW_BINARY). MAC and compression are applied
-        automatically by the framing layer."""
-        frame = pack_frame(target, payload, flags=extra_flags, session_key=self.session_key)
-        self._writer.write(frame)
-        await self._writer.drain()
+        automatically by the framing layer.
+
+        Over WebSocket, frames are never compressed (the gateway rejects
+        FLAG_COMPRESSED inbound) — see :meth:`connect_ws`.
+        """
+        if self._is_ws():
+            if len(payload) > MAX_PAYLOAD:
+                raise VeyronPayloadTooLarge(len(payload))
+            # Never compress over WS; MAC still applies
+            frame = pack_frame(
+                target, payload, flags=extra_flags, session_key=self.session_key, compress=False
+            )
+            try:
+                await self._ws.send(frame)  # type: ignore[union-attr]
+            except Exception as e:
+                raise VeyronInternal(f"websocket send failed: {e}") from e
+        else:
+            frame = pack_frame(target, payload, flags=extra_flags, session_key=self.session_key)
+            assert self._writer is not None, "not connected"
+            self._writer.write(frame)
+            await self._writer.drain()
 
     async def send_fragmented(self, target: str, payload: bytes, chunk_size: int) -> None:
-        """Split `payload` into FLAG_FRAGMENTED frames of at most `chunk_size`
+        """Split ``payload`` into ``FLAG_FRAGMENTED`` frames of at most ``chunk_size``
         data bytes each and send them on a fresh stream id. The kernel
-        reassembles them into a single logical frame for `target`.
+        reassembles them into a single logical frame for ``target``.
 
-        Bounds mirror the kernel: total payload <= 1 MiB, <= 65535 fragments."""
+        Bounds mirror the kernel: total payload <= 1 MiB, <= 65535 fragments.
+        UDS only — the WS gateway rejects fragmented inbound frames (R5-03),
+        so this raises on a WebSocket transport.
+        """
+        if self._is_ws():
+            raise VeyronInternal("fragmented frames are not supported over WebSocket (R5-03)")
         if len(payload) > MAX_PAYLOAD:
             raise VeyronPayloadTooLarge(len(payload))
         if chunk_size <= 0 or chunk_size + FRAG_HEADER_SIZE > MAX_PAYLOAD:
@@ -242,19 +350,41 @@ class VynkorClient:
     # ── Receiving ───────────────────────────────────────────────────
 
     async def recv_frame(self):
-        """Receive the next complete frame as (flags, payload), transparently
-        reassembling FLAG_FRAGMENTED frames. Raw-binary frames are returned
-        as-is (check `flags & FLAG_RAW_BINARY`). Mirrors the rust SDK's
-        VynkorClient::recv_frame."""
+        """Receive the next complete frame as ``(flags, payload)``, transparently
+        reassembling ``FLAG_FRAGMENTED`` frames. Raw-binary frames are returned
+        as-is (check ``flags & FLAG_RAW_BINARY``). Mirrors the Rust SDK's
+        ``VynkorClient::recv_frame``."""
         while True:
             self._prune_reassembly()
-            flags, payload = await async_read_frame(self._reader, session_key=self.session_key)
+            if self._is_ws():
+                flags, payload = await self._ws_recv_frame()
+            else:
+                assert self._reader is not None, "not connected"
+                flags, payload = await async_read_frame(self._reader, session_key=self.session_key)
             if flags & FLAG_FRAGMENTED:
                 complete = self._absorb_fragment(flags, payload)
                 if complete is None:
                     continue
                 return complete
             return flags, payload
+
+    async def _ws_recv_frame(self):
+        """Read one WS binary message and parse it as a frame."""
+        assert self._ws is not None, "not connected (ws)"
+        while True:
+            try:
+                data = await self._ws.recv()  # type: ignore[union-attr]
+            except Exception as e:
+                # Map websocket close/error to Io-like error so callers see
+                # disconnect / EOF, matching UDS behavior
+                raise VeyronInternal(f"websocket connection closed: {e}") from e
+            # websockets may deliver str for text frames — ignore them (kernel
+            # gateway never sends them as traffic, per Rust docs)
+            if isinstance(data, str):
+                continue
+            if not isinstance(data, (bytes, bytearray)):
+                continue
+            return read_frame_from_bytes(bytes(data), session_key=self.session_key)
 
     async def recv(self) -> Envelope:
         flags, payload = await self.recv_frame()
@@ -268,7 +398,7 @@ class VynkorClient:
         return env
 
     async def recv_timeout(self, timeout: float) -> Envelope:
-        """Receive and decode the next Envelope, bounded by `timeout` seconds.
+        """Receive and decode the next Envelope, bounded by ``timeout`` seconds.
         Raises VeyronTimeout if nothing arrives in time."""
         try:
             return await asyncio.wait_for(self.recv(), timeout=timeout)
@@ -287,8 +417,8 @@ class VynkorClient:
             del self._reassembly[sid]
 
     def _absorb_fragment(self, flags: int, payload: bytes):
-        """Buffer one fragment; returns (flags, payload) when the set is
-        complete, else None. Mirrors the rust SDK's absorb_fragment."""
+        """Buffer one fragment; returns ``(flags, payload)`` when the set is
+        complete, else ``None``. Mirrors the Rust SDK's ``absorb_fragment``."""
         hdr = parse_frag_header(payload)
         if hdr is None:
             raise VeyronInternal("fragment header too short")
@@ -347,10 +477,10 @@ class VynkorClient:
         self, event_type: str, payload_json: bytes, timeout_ms: int = 0
     ) -> EventPublishAck:
         """Publish an event to the kernel event bus. Requires
-        PERMISSION_EVENT_PUBLISH. timeout_ms == 0 uses the kernel default of
-        30s. Raises VeyronInternal on a kernel Error envelope, VeyronTimeout on
-        deadline expiry. The returned EventPublishAck is returned as-is
-        regardless of its status field — callers inspect ack.status
+        ``PERMISSION_EVENT_PUBLISH``. ``timeout_ms == 0`` uses the kernel default of
+        30s. Raises ``VeyronInternal`` on a kernel Error envelope, ``VeyronTimeout`` on
+        deadline expiry. The returned ``EventPublishAck`` is returned as-is
+        regardless of its status field — callers inspect ``ack.status``
         themselves, mirroring the Rust SDK."""
         env = Envelope()
         env.event_publish.CopyFrom(EventPublish(event_type=event_type, payload_json=payload_json))
@@ -372,10 +502,10 @@ class VynkorClient:
     async def send_action(
         self, action: str, params_json: bytes, timeout_ms: int = 0
     ) -> ActionResponse:
-        """Ask the kernel to perform an action and await its ActionResponse.
-        timeout_ms == 0 uses the kernel default of 30s. Raises VeyronInternal on
-        a kernel Error envelope or an ActionStreamAbort for this action_id,
-        VeyronTimeout on deadline expiry."""
+        """Ask the kernel to perform an action and await its ``ActionResponse``.
+        ``timeout_ms == 0`` uses the kernel default of 30s. Raises
+        ``VeyronInternal`` on a kernel Error envelope or an ActionStreamAbort for
+        this ``action_id``, ``VeyronTimeout`` on deadline expiry."""
         action_id = _next_action_id()
         env = Envelope()
         env.action_request.CopyFrom(ActionRequest(
@@ -405,9 +535,9 @@ class VynkorClient:
         return resp.action_response
 
     async def send_action_streaming(self, action: str, timeout_ms: int = 0) -> str:
-        """Fire an ActionRequest with streaming=True and return its action_id
-        immediately — no wait. Caller drives send_request_chunk/recv/
-        close_session afterward."""
+        """Fire an ``ActionRequest`` with ``streaming=True`` and return its ``action_id``
+        immediately — no wait. Caller drives ``send_request_chunk``/``recv``/
+        ``close_session`` afterward."""
         action_id = _next_action_id()
         env = Envelope()
         env.action_request.CopyFrom(ActionRequest(
@@ -446,7 +576,7 @@ class VynkorClient:
     async def send_command(
         self, command_id: str, command: str, params_json: bytes
     ) -> KernelCommandAck:
-        """Send a KernelCommand and await its ack."""
+        """Send a ``KernelCommand`` and await its ack."""
         env = Envelope()
         env.kernel_command.CopyFrom(KernelCommand(
             command_id=command_id, command=command, params_json=params_json
@@ -458,7 +588,7 @@ class VynkorClient:
         raise VeyronInternal("expected KernelCommandAck")
 
     async def ping(self) -> float:
-        """Round-trip a Ping to the kernel; returns measured latency in
+        """Round-trip a ``Ping`` to the kernel; returns measured latency in
         seconds."""
         ts = int(time.time() * 1000)
         ping_msg = Ping(timestamp=ts)
@@ -474,23 +604,24 @@ class VynkorClient:
     # ── Audio ───────────────────────────────────────────────────────
 
     async def send_audio_chunk(self, target: str, chunk: AudioStreamChunk) -> None:
-        """Send an AudioStreamChunk (stream negotiation / Opus-over-envelope)
-        to a peer plugin. Requires PERMISSION_AUDIO_STREAM."""
+        """Send an ``AudioStreamChunk`` (stream negotiation / Opus-over-envelope)
+        to a peer plugin. Requires ``PERMISSION_AUDIO_STREAM``."""
         env = Envelope()
         env.audio_stream_chunk.CopyFrom(chunk)
         await self.send(target, env)
 
     async def send_raw_audio(self, target: str, data: bytes) -> None:
-        """Send raw audio bytes (PCM_S16LE or Opus) with FLAG_RAW_BINARY; the
+        """Send raw audio bytes (PCM_S16LE or Opus) with ``FLAG_RAW_BINARY``; the
         router skips Protobuf decode. Raw-binary payloads are never
-        compressed."""
+        compressed. Works over both UDS and WebSocket — ``FLAG_RAW_BINARY``
+        passes unchanged over WS."""
         await self.send_raw_with_flags(target, FLAG_RAW_BINARY, data)
 
     async def _await_matching(
         self, deadline: float, predicate: Callable[[Envelope], bool]
     ) -> Envelope:
-        """Loop recv/predicate until predicate(env) is true or deadline
-        passes. Shared by publish_event and send_action — each supplies its
+        """Loop ``recv``/``predicate`` until ``predicate(env)`` is true or deadline
+        passes. Shared by ``publish_event`` and ``send_action`` — each supplies its
         own match/discard predicate."""
         while True:
             remaining = deadline - time.monotonic()
