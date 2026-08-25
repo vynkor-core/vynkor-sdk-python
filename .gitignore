@@ -14,3 +14,5 @@ venv/
 .env
 .coverage
 htmlcov/
+.omo/
+.codegraph/
