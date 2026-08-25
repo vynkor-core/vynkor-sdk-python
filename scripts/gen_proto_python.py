@@ -10,6 +10,13 @@ PROTO = PROTO_DIR / "vynkor_protocol.proto"
 OUT = ROOT / "vynkor"
 
 if __name__ == "__main__":
+    if not PROTO.exists():
+        print(
+            f"skip: {PROTO} not found (vynkor-wire not checked out side-by-side); "
+            "proto is vendored — re-sync manually when wire changes",
+            file=sys.stderr,
+        )
+        sys.exit(0)
     OUT.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [

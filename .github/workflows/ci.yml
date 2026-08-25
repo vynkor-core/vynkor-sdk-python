@@ -24,10 +24,15 @@ jobs:
           pip install -e ".[dev]"
           pip install websockets
 
-      - name: Proto is in sync
+      - name: Proto is in sync (when wire is checked out)
         run: |
-          python scripts/gen_proto_python.py
-          git diff --exit-code -- vynkor/vynkor_protocol_pb2.py || (echo "FAIL: proto out of sync — run scripts/gen_proto_python.py and commit" && exit 1)
+          if [ -f ../vynkor-wire/proto/vynkor_protocol.proto ] || [ -f vynkor-wire/proto/vynkor_protocol.proto ]; then
+            python scripts/gen_proto_python.py
+            git diff --exit-code -- vynkor/vynkor_protocol_pb2.py || (echo "FAIL: proto out of sync — run scripts/gen_proto_python.py and commit" && exit 1)
+          else
+            echo "skip proto check: vynkor-wire not present (vendored proto)"
+            python -c "import vynkor.vynkor_protocol_pb2; print('proto import ok')"
+          fi
 
       - name: Tests
         run: pytest -v
