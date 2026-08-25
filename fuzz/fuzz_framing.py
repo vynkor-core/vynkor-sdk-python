@@ -1,4 +1,4 @@
-"""atheris libFuzzer harness for veyron.framing.read_frame (T-14, Python half).
+"""atheris libFuzzer harness for vynkor.framing.read_frame (T-14, Python half).
 
 Build/run (requires clang, atheris via `pip install atheris`):
     python sdk/python/fuzz/fuzz_framing.py -max_len=1100000

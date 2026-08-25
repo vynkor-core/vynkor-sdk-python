@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install websockets
+
+      - name: Proto is in sync
+        run: |
+          python scripts/gen_proto_python.py
+          git diff --exit-code -- vynkor/vynkor_protocol_pb2.py || (echo "FAIL: proto out of sync — run scripts/gen_proto_python.py and commit" && exit 1)
+
+      - name: Tests
+        run: pytest -v
+
+      - name: Import check (no missing deps)
+        run: python -c "import vynkor; print(vynkor.__all__)"

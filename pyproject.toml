@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vynkor-sdk"
-version = "0.0.2"
-description = "Vynkor plugin SDK for Python"
+version = "0.0.3"
+description = "Python SDK for writing Vynkor plugins — async IPC client (UDS + WebSocket), Plugin trait, and full Vynkor wire protocol (framing, zstd compression, HMAC frame MACs, fragmentation, raw audio)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [
-    { name = "veyron-core", email = "btemirkhodjaev@gmail.com" },
+    { name = "vynkor-core", email = "btemirkhodjaev@gmail.com" },
 ]
 keywords = ["vynkor", "plugin", "ipc", "sdk", "kernel"]
 classifiers = [
@@ -28,10 +28,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    # pb2 regenerated with protoc 35.1 (gencode 7.35.1); runtime major must match.
-    "protobuf>=7.35.1",
+    # pb2 regenerated with protoc 6.33.5 (gencode 6.33.5); runtime major must match.
+    "protobuf>=6.33.5",
     # decompress FLAG_COMPRESSED frames (kernel zstd-compresses payloads >= 64 KiB)
     "zstandard>=0.22",
+    # WebSocket transport (remote devices, D-05) — mirrors Rust tokio-tungstenite
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
@@ -41,15 +43,15 @@ dev = [
     "pytest-asyncio>=0.21",
 ]
 fuzz = [
-    # T-14: fuzz/fuzz_framing.py harness for veyron.framing.read_frame.
+    # T-14: fuzz/fuzz_framing.py harness for vynkor.framing.read_frame.
     "atheris>=2.3; platform_system != 'Windows'",
 ]
 
 [project.urls]
-Homepage = "https://github.com/vynkor-core/vynkor"
-Repository = "https://github.com/vynkor-core/vynkor"
-Documentation = "https://github.com/vynkor-core/vynkor/blob/main/docs"
-Issues = "https://github.com/vynkor-core/vynkor/issues"
+Homepage = "https://github.com/vynkor-core/vynkor-sdk-python"
+Repository = "https://github.com/vynkor-core/vynkor-sdk-python"
+Documentation = "https://github.com/vynkor-core/vynkor-sdk-python"
+Issues = "https://github.com/vynkor-core/vynkor-sdk-python/issues"
 
 [tool.pytest.ini_options]
 # tests/ imports the in-tree package directly (no install needed).
@@ -58,4 +60,4 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
-packages = ["veyron"]
+packages = ["vynkor"]
