@@ -168,15 +168,15 @@ async def serve_concurrent(client, jwt_token: str, handler: ConcurrentHandler) -
 
     Wraps :func:`run_concurrent_loop` with registration; ``jwt_token`` is
     presented at registration (empty string on unsecured kernels). A
-    rejected registration raises :class:`vynkor.errors.VeyronPermissionDenied`.
+    rejected registration raises :class:`vynkor.errors.VynkorPermissionDenied`.
     """
-    from .errors import VeyronPermissionDenied
+    from .errors import VynkorPermissionDenied
 
     ack = await client.register_full(
         handler.id(), handler.version(), handler.manifest(), jwt_token
     )
     if not ack.accepted:
-        raise VeyronPermissionDenied(f"registration rejected: {ack.reject_reason}")
+        raise VynkorPermissionDenied(f"registration rejected: {ack.reject_reason}")
     try:
         await handler.on_init(client)
     except BaseException:

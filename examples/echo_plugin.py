@@ -1,4 +1,4 @@
-"""Lightweight demo plugin for the Veyron Python SDK.
+"""Lightweight demo plugin for the Vynkor Python SDK.
 
 Shows: lifecycle hooks, manifest declaration, action handling (plain,
 streaming, and publish-from-plugin), event subscription, and SessionClose

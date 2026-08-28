@@ -9,7 +9,7 @@ import time
 import pytest
 
 from vynkor import VynkorClient
-from vynkor.errors import VeyronInternal, VeyronTimeout
+from vynkor.errors import VynkorInternal, VynkorTimeout
 from vynkor.framing import pack_frame, read_frame
 from vynkor.vynkor_protocol_pb2 import (
     Envelope,
@@ -76,7 +76,7 @@ async def test_send_action_stream_abort_for_action_id_raises():
 
     t = threading.Thread(target=kernel)
     t.start()
-    with pytest.raises(VeyronInternal):
+    with pytest.raises(VynkorInternal):
         await client.send_action("get_weather", b"{}", 1000)
     t.join()
 
@@ -94,7 +94,7 @@ async def test_send_action_kernel_error_envelope_raises():
 
     t = threading.Thread(target=kernel)
     t.start()
-    with pytest.raises(VeyronInternal):
+    with pytest.raises(VynkorInternal):
         await client.send_action("get_weather", b"{}", 1000)
     t.join()
 
@@ -110,7 +110,7 @@ async def test_send_action_times_out_when_no_response():
     t = threading.Thread(target=kernel)
     t.start()
     start = time.monotonic()
-    with pytest.raises(VeyronTimeout):
+    with pytest.raises(VynkorTimeout):
         await client.send_action("get_weather", b"{}", 150)
     elapsed = time.monotonic() - start
     assert elapsed < 2.0

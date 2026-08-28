@@ -21,7 +21,7 @@ from vynkor.framing import (
     pack_frame,
     read_frame,
 )
-from vynkor.errors import VeyronInternal
+from vynkor.errors import VynkorInternal
 
 
 def _pack_compressed_frame(target: str, plain_payload: bytes, session_key=None) -> bytes:
@@ -67,7 +67,7 @@ def test_read_frame_rejects_bad_mac_on_compressed_frame():
     wrong_key = derive_session_key(b"different", b"nonce123", "plugin-a")
     payload = b"y" * 100_000
     frame = _pack_compressed_frame("kernel", payload, session_key=session_key)
-    with pytest.raises(VeyronInternal, match="MAC"):
+    with pytest.raises(VynkorInternal, match="MAC"):
         read_frame(io.BytesIO(frame), session_key=wrong_key)
 
 
@@ -85,5 +85,5 @@ def test_read_frame_rejects_garbage_compressed_payload():
     target_bytes = b"kernel".ljust(32, b"\x00")[:32]
     crc = crc32(garbage) & 0xFFFFFFFF
     header = struct.pack(HEADER_FMT, MAGIC, FLAG_COMPRESSED, len(garbage), target_bytes, crc)
-    with pytest.raises(VeyronInternal):
+    with pytest.raises(VynkorInternal):
         read_frame(io.BytesIO(header + garbage))

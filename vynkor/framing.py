@@ -8,12 +8,12 @@ from typing import Optional
 import zstandard
 
 from .errors import (
-    VeyronFrameCrcMismatch,
-    VeyronFrameMagicMismatch,
-    VeyronFrameReadTimeout,
-    VeyronInternal,
-    VeyronIoError,
-    VeyronPayloadTooLarge,
+    VynkorFrameCrcMismatch,
+    VynkorFrameMagicMismatch,
+    VynkorFrameReadTimeout,
+    VynkorInternal,
+    VynkorIoError,
+    VynkorPayloadTooLarge,
 )
 
 MAGIC = 0x5652
@@ -116,9 +116,9 @@ def _decompress(payload: bytes) -> bytes:
     try:
         out = decompressor.decompress(payload, max_output_size=MAX_PAYLOAD)
     except zstandard.ZstdError as e:
-        raise VeyronInternal(f"decompress frame: {e}") from e
+        raise VynkorInternal(f"decompress frame: {e}") from e
     if len(out) > MAX_PAYLOAD:
-        raise VeyronPayloadTooLarge(len(out))
+        raise VynkorPayloadTooLarge(len(out))
     return out
 
 
@@ -139,7 +139,7 @@ def pack_frame(
     rejects FLAG_COMPRESSED inbound, so the WS path never compresses).
     """
     if len(payload) > MAX_PAYLOAD:
-        raise VeyronPayloadTooLarge(len(payload))
+        raise VynkorPayloadTooLarge(len(payload))
     if session_key is not None:
         flags |= FLAG_MAC_PRESENT
 
@@ -190,29 +190,29 @@ def read_frame(stream, session_key: Optional[bytes] = None) -> bytes:
     not a live socket — use async_read_frame for that."""
     header_bytes = stream.read(HEADER_SIZE)
     if len(header_bytes) < HEADER_SIZE:
-        raise VeyronIoError("truncated frame header")
+        raise VynkorIoError("truncated frame header")
     magic, flags, length, target_bytes, stored_crc = struct.unpack(HEADER_FMT, header_bytes)
     if magic != MAGIC:
-        raise VeyronFrameMagicMismatch()
+        raise VynkorFrameMagicMismatch()
     if length > MAX_PAYLOAD:
-        raise VeyronPayloadTooLarge(length)
+        raise VynkorPayloadTooLarge(length)
     payload = stream.read(length) if length > 0 else b""
     if len(payload) < length:
-        raise VeyronIoError("truncated frame payload")
+        raise VynkorIoError("truncated frame payload")
     computed = crc32(payload) & 0xFFFFFFFF
     if computed != stored_crc:
-        raise VeyronFrameCrcMismatch()
+        raise VynkorFrameCrcMismatch()
 
     flags, header_bytes, payload = _normalize(flags, target_bytes, payload)
 
     if flags & FLAG_MAC_PRESENT:
         tag = stream.read(32)
         if len(tag) < 32:
-            raise VeyronIoError("truncated MAC tag")
+            raise VynkorIoError("truncated MAC tag")
         if session_key is not None and not verify_tag(session_key, header_bytes, payload, tag):
-            raise VeyronInternal("frame MAC verification failed")
+            raise VynkorInternal("frame MAC verification failed")
     elif session_key is not None:
-        raise VeyronInternal("MAC missing on secured connection")
+        raise VynkorInternal("MAC missing on secured connection")
     return payload
 
 
@@ -229,29 +229,29 @@ def read_frame_from_bytes(data: bytes, session_key: Optional[bytes] = None):
     stream = io.BytesIO(data)
     header_bytes = stream.read(HEADER_SIZE)
     if len(header_bytes) < HEADER_SIZE:
-        raise VeyronIoError("truncated frame header")
+        raise VynkorIoError("truncated frame header")
     magic, flags, length, target_bytes, stored_crc = struct.unpack(HEADER_FMT, header_bytes)
     if magic != MAGIC:
-        raise VeyronFrameMagicMismatch()
+        raise VynkorFrameMagicMismatch()
     if length > MAX_PAYLOAD:
-        raise VeyronPayloadTooLarge(length)
+        raise VynkorPayloadTooLarge(length)
     payload = stream.read(length) if length > 0 else b""
     if len(payload) < length:
-        raise VeyronIoError("truncated frame payload")
+        raise VynkorIoError("truncated frame payload")
     computed = crc32(payload) & 0xFFFFFFFF
     if computed != stored_crc:
-        raise VeyronFrameCrcMismatch()
+        raise VynkorFrameCrcMismatch()
 
     flags, header_bytes2, payload = _normalize(flags, target_bytes, payload)
 
     if flags & FLAG_MAC_PRESENT:
         tag = stream.read(32)
         if len(tag) < 32:
-            raise VeyronIoError("truncated MAC tag")
+            raise VynkorIoError("truncated MAC tag")
         if session_key is not None and not verify_tag(session_key, header_bytes2, payload, tag):
-            raise VeyronInternal("frame MAC verification failed")
+            raise VynkorInternal("frame MAC verification failed")
     elif session_key is not None:
-        raise VeyronInternal("MAC missing on secured connection")
+        raise VynkorInternal("MAC missing on secured connection")
     return flags, payload
 
 
@@ -272,25 +272,25 @@ async def async_read_frame(
         header_bytes = first_byte + await reader.readexactly(HEADER_SIZE - 1)
         magic, flags, length, target_bytes, stored_crc = struct.unpack(HEADER_FMT, header_bytes)
         if magic != MAGIC:
-            raise VeyronFrameMagicMismatch()
+            raise VynkorFrameMagicMismatch()
         if length > MAX_PAYLOAD:
-            raise VeyronPayloadTooLarge(length)
+            raise VynkorPayloadTooLarge(length)
         payload = await reader.readexactly(length) if length > 0 else b""
         computed = crc32(payload) & 0xFFFFFFFF
         if computed != stored_crc:
-            raise VeyronFrameCrcMismatch()
+            raise VynkorFrameCrcMismatch()
 
         flags, header_bytes2, payload = _normalize(flags, target_bytes, payload)
 
         if flags & FLAG_MAC_PRESENT:
             tag = await reader.readexactly(32)
             if session_key is not None and not verify_tag(session_key, header_bytes2, payload, tag):
-                raise VeyronInternal("frame MAC verification failed")
+                raise VynkorInternal("frame MAC verification failed")
         elif session_key is not None:
-            raise VeyronInternal("MAC missing on secured connection")
+            raise VynkorInternal("MAC missing on secured connection")
         return flags, payload
 
     try:
         return await asyncio.wait_for(_read_body(), timeout=frame_timeout)
     except asyncio.TimeoutError:
-        raise VeyronFrameReadTimeout() from None
+        raise VynkorFrameReadTimeout() from None

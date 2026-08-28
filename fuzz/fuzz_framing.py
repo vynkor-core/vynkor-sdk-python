@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 with atheris.instrument_imports():
     from vynkor.framing import read_frame
-    from vynkor.errors import VeyronError
+    from vynkor.errors import VynkorError
 
 FIXED_KEY = bytes(range(32))
 
@@ -26,12 +26,12 @@ FIXED_KEY = bytes(range(32))
 def test_one_input(data: bytes) -> None:
     try:
         read_frame(io.BytesIO(data))
-    except VeyronError:
+    except VynkorError:
         pass  # rejecting malformed input is expected, correct behavior
 
     try:
         read_frame(io.BytesIO(data), session_key=FIXED_KEY)
-    except VeyronError:
+    except VynkorError:
         pass
 
 
