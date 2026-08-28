@@ -250,10 +250,10 @@ Other client methods: `recv()` / `recv_frame()` / `recv_timeout(timeout)`,
 
 All SDK-level failures raise `vynkor.VynkorError` (or a subclass) instead of
 bare `ValueError` / `RuntimeError` / `TimeoutError`. Subclasses mirror the
-Rust `WireError` variants: `VeyronIoError`, `VeyronProtoError`,
-`VeyronFrameMagicMismatch`, `VeyronFrameCrcMismatch`, `VeyronFrameReadTimeout`,
-`VeyronPayloadTooLarge`, `VeyronTimeout`, `VeyronPermissionDenied`,
-`VeyronInternal`.
+Rust `WireError` variants: `VynkorIoError`, `VynkorProtoError`,
+`VynkorFrameMagicMismatch`, `VynkorFrameCrcMismatch`, `VynkorFrameReadTimeout`,
+`VynkorPayloadTooLarge`, `VynkorTimeout`, `VynkorPermissionDenied`,
+`VynkorInternal`.
 
 ## Development
 

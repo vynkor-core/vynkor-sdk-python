@@ -14,7 +14,7 @@ from vynkor.framing import (
     async_read_frame,
     HEADER_SIZE,
 )
-from vynkor.errors import VeyronInternal
+from vynkor.errors import VynkorInternal
 
 
 def test_derive_session_key_is_deterministic():
@@ -97,7 +97,7 @@ def test_read_frame_mac_rejects_tampered():
     payload = b"round trip"
     frame = bytearray(pack_frame("tgt", payload, session_key=key))
     frame[-1] ^= 0xFF  # corrupt last byte of MAC tag
-    with pytest.raises(VeyronInternal, match="MAC verification failed"):
+    with pytest.raises(VynkorInternal, match="MAC verification failed"):
         read_frame(io.BytesIO(bytes(frame)), session_key=key)
 
 

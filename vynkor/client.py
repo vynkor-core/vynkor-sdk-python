@@ -21,10 +21,10 @@ import time
 from typing import Callable, Optional
 
 from .errors import (
-    VeyronInternal,
-    VeyronPayloadTooLarge,
-    VeyronProtoError,
-    VeyronTimeout,
+    VynkorInternal,
+    VynkorPayloadTooLarge,
+    VynkorProtoError,
+    VynkorTimeout,
 )
 from .framing import (
     FLAG_FRAGMENTED,
@@ -194,7 +194,7 @@ class VynkorClient:
             import websockets
             import websockets.exceptions
         except ImportError as e:
-            raise VeyronInternal(
+            raise VynkorInternal(
                 "websockets package required for WebSocket transport: pip install vynkor-sdk[websockets] or websockets>=12"
             ) from e
 
@@ -280,10 +280,10 @@ class VynkorClient:
                 self._apply_session_nonce(plugin_id, nonce)
             return ack
         if response.HasField("error"):
-            raise VeyronInternal(
+            raise VynkorInternal(
                 f"registration rejected: {response.error.message} ({response.error.details})"
             )
-        raise VeyronInternal("expected PluginRegisterAck")
+        raise VynkorInternal("expected PluginRegisterAck")
 
     # ── Sending ─────────────────────────────────────────────────────
 
@@ -304,7 +304,7 @@ class VynkorClient:
         """
         if self._is_ws():
             if len(payload) > MAX_PAYLOAD:
-                raise VeyronPayloadTooLarge(len(payload))
+                raise VynkorPayloadTooLarge(len(payload))
             # Never compress over WS; MAC still applies
             frame = pack_frame(
                 target, payload, flags=extra_flags, session_key=self.session_key, compress=False
@@ -312,7 +312,7 @@ class VynkorClient:
             try:
                 await self._ws.send(frame)  # type: ignore[union-attr]
             except Exception as e:
-                raise VeyronInternal(f"websocket send failed: {e}") from e
+                raise VynkorInternal(f"websocket send failed: {e}") from e
         else:
             frame = pack_frame(target, payload, flags=extra_flags, session_key=self.session_key)
             assert self._writer is not None, "not connected"
@@ -329,14 +329,14 @@ class VynkorClient:
         so this raises on a WebSocket transport.
         """
         if self._is_ws():
-            raise VeyronInternal("fragmented frames are not supported over WebSocket (R5-03)")
+            raise VynkorInternal("fragmented frames are not supported over WebSocket (R5-03)")
         if len(payload) > MAX_PAYLOAD:
-            raise VeyronPayloadTooLarge(len(payload))
+            raise VynkorPayloadTooLarge(len(payload))
         if chunk_size <= 0 or chunk_size + FRAG_HEADER_SIZE > MAX_PAYLOAD:
-            raise VeyronInternal(f"invalid fragment chunk_size: {chunk_size}")
+            raise VynkorInternal(f"invalid fragment chunk_size: {chunk_size}")
         total = max(1, -(-len(payload) // chunk_size))  # ceil div
         if total > 0xFFFF:
-            raise VeyronInternal(f"payload needs {total} fragments; max is 65535")
+            raise VynkorInternal(f"payload needs {total} fragments; max is 65535")
 
         stream_id = self._next_stream_id
         self._next_stream_id = (self._next_stream_id + 1) & 0xFFFFFFFF or 1
@@ -377,7 +377,7 @@ class VynkorClient:
             except Exception as e:
                 # Map websocket close/error to Io-like error so callers see
                 # disconnect / EOF, matching UDS behavior
-                raise VeyronInternal(f"websocket connection closed: {e}") from e
+                raise VynkorInternal(f"websocket connection closed: {e}") from e
             # websockets may deliver str for text frames — ignore them (kernel
             # gateway never sends them as traffic, per Rust docs)
             if isinstance(data, str):
@@ -389,21 +389,21 @@ class VynkorClient:
     async def recv(self) -> Envelope:
         flags, payload = await self.recv_frame()
         if flags & FLAG_RAW_BINARY:
-            raise VeyronInternal("received raw-binary frame; use recv_frame() for audio")
+            raise VynkorInternal("received raw-binary frame; use recv_frame() for audio")
         env = Envelope()
         try:
             env.ParseFromString(payload)
         except Exception as e:
-            raise VeyronProtoError(str(e)) from e
+            raise VynkorProtoError(str(e)) from e
         return env
 
     async def recv_timeout(self, timeout: float) -> Envelope:
         """Receive and decode the next Envelope, bounded by ``timeout`` seconds.
-        Raises VeyronTimeout if nothing arrives in time."""
+        Raises VynkorTimeout if nothing arrives in time."""
         try:
             return await asyncio.wait_for(self.recv(), timeout=timeout)
         except asyncio.TimeoutError:
-            raise VeyronTimeout() from None
+            raise VynkorTimeout() from None
 
     def _prune_reassembly(self) -> None:
         """Stale sets can't pin memory forever."""
@@ -421,18 +421,18 @@ class VynkorClient:
         complete, else ``None``. Mirrors the Rust SDK's ``absorb_fragment``."""
         hdr = parse_frag_header(payload)
         if hdr is None:
-            raise VeyronInternal("fragment header too short")
+            raise VynkorInternal("fragment header too short")
         _fragment_id, seq, total, stream_id = hdr
         if total == 0 or seq >= total:
-            raise VeyronInternal(f"invalid fragment header: seq {seq} / total {total}")
+            raise VynkorInternal(f"invalid fragment header: seq {seq} / total {total}")
 
         buf = self._reassembly.get(stream_id)
         if buf is not None:
             if buf.total != total:
                 del self._reassembly[stream_id]
-                raise VeyronInternal("fragment total mismatch within stream")
+                raise VynkorInternal("fragment total mismatch within stream")
         elif len(self._reassembly) >= MAX_REASSEMBLY_STREAMS:
-            raise VeyronInternal("too many concurrent fragment streams")
+            raise VynkorInternal("too many concurrent fragment streams")
         else:
             buf = _ReassemblyBuf(total, flags & ~(FLAG_FRAGMENTED | FLAG_MAC_PRESENT))
             self._reassembly[stream_id] = buf
@@ -442,7 +442,7 @@ class VynkorClient:
         new_total = buf.buffered_bytes - replaced_len + len(chunk)
         if new_total > MAX_PAYLOAD:
             del self._reassembly[stream_id]
-            raise VeyronPayloadTooLarge(MAX_PAYLOAD + 1)
+            raise VynkorPayloadTooLarge(MAX_PAYLOAD + 1)
         buf.buffered_bytes = new_total
         buf.fragments[seq] = chunk
 
@@ -478,7 +478,7 @@ class VynkorClient:
     ) -> EventPublishAck:
         """Publish an event to the kernel event bus. Requires
         ``PERMISSION_EVENT_PUBLISH``. ``timeout_ms == 0`` uses the kernel default of
-        30s. Raises ``VeyronInternal`` on a kernel Error envelope, ``VeyronTimeout`` on
+        30s. Raises ``VynkorInternal`` on a kernel Error envelope, ``VynkorTimeout`` on
         deadline expiry. The returned ``EventPublishAck`` is returned as-is
         regardless of its status field — callers inspect ``ack.status``
         themselves, mirroring the Rust SDK."""
@@ -494,7 +494,7 @@ class VynkorClient:
             lambda r: r.HasField("event_publish_ack") or r.HasField("error"),
         )
         if resp.HasField("error"):
-            raise VeyronInternal(
+            raise VynkorInternal(
                 f"kernel error: {resp.error.message} ({resp.error.details})"
             )
         return resp.event_publish_ack
@@ -504,8 +504,8 @@ class VynkorClient:
     ) -> ActionResponse:
         """Ask the kernel to perform an action and await its ``ActionResponse``.
         ``timeout_ms == 0`` uses the kernel default of 30s. Raises
-        ``VeyronInternal`` on a kernel Error envelope or an ActionStreamAbort for
-        this ``action_id``, ``VeyronTimeout`` on deadline expiry."""
+        ``VynkorInternal`` on a kernel Error envelope or an ActionStreamAbort for
+        this ``action_id``, ``VynkorTimeout`` on deadline expiry."""
         action_id = _next_action_id()
         env = Envelope()
         env.action_request.CopyFrom(ActionRequest(
@@ -527,11 +527,11 @@ class VynkorClient:
             or r.HasField("error"),
         )
         if resp.HasField("error"):
-            raise VeyronInternal(
+            raise VynkorInternal(
                 f"kernel error: {resp.error.message} ({resp.error.details})"
             )
         if resp.HasField("action_stream_abort"):
-            raise VeyronInternal(f"stream aborted: {resp.action_stream_abort.reason}")
+            raise VynkorInternal(f"stream aborted: {resp.action_stream_abort.reason}")
         return resp.action_response
 
     async def send_action_streaming(self, action: str, timeout_ms: int = 0) -> str:
@@ -585,7 +585,7 @@ class VynkorClient:
         response = await self.recv()
         if response.HasField("kernel_command_ack"):
             return response.kernel_command_ack
-        raise VeyronInternal("expected KernelCommandAck")
+        raise VynkorInternal("expected KernelCommandAck")
 
     async def ping(self) -> float:
         """Round-trip a ``Ping`` to the kernel; returns measured latency in
@@ -598,7 +598,7 @@ class VynkorClient:
         await self.send("kernel", env)
         response = await self.recv()
         if not response.HasField("pong"):
-            raise VeyronInternal("expected Pong")
+            raise VynkorInternal("expected Pong")
         return time.monotonic() - t0
 
     # ── Audio ───────────────────────────────────────────────────────
@@ -626,7 +626,7 @@ class VynkorClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise VeyronTimeout()
+                raise VynkorTimeout()
             resp = await self.recv_timeout(remaining)
             if predicate(resp):
                 return resp

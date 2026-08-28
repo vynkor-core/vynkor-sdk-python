@@ -1,4 +1,4 @@
-"""Integration tests for the Python Veyron SDK.
+"""Integration tests for the Python Vynkor SDK.
 
 Requires a running kernel (vyn start --foreground) at /tmp/vyn.sock.
 Run with: pytest tests/ -v

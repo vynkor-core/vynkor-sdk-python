@@ -11,7 +11,7 @@ import time
 from typing import Optional
 
 from .client import VynkorClient
-from .errors import VynkorError, VeyronPermissionDenied
+from .errors import VynkorError, VynkorPermissionDenied
 from .vynkor_protocol_pb2 import Envelope, Event, PluginManifest, Pong
 
 
@@ -143,7 +143,7 @@ class Plugin:
         self._client = client
         ack = await client.register_full(self.id(), self.version(), self.manifest(), jwt_token)
         if not ack.accepted:
-            raise VeyronPermissionDenied(f"registration rejected: {ack.reject_reason}")
+            raise VynkorPermissionDenied(f"registration rejected: {ack.reject_reason}")
 
         try:
             await self.on_init(client)

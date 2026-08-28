@@ -423,7 +423,7 @@ async def send_confirmation_request(client, op: str, params_json: bytes) -> str:
     Invokes ``request_<op>`` and returns the ``pending_id`` the plugin
     assigned. Raises on non-OK status or missing ``pending_id``.
     """
-    from .errors import VeyronInternal
+    from .errors import VynkorInternal
 
     resp = await client.send_action(f"request_{op}", params_json, 0)
     # ActionStatus.ACTION_OK == 1 (proto3 renumbered: 0 is UNKNOWN)
@@ -433,17 +433,17 @@ async def send_confirmation_request(client, op: str, params_json: bytes) -> str:
             from .vynkor_protocol_pb2 import ActionStatus as _AS
 
             if resp.status != _AS.ACTION_OK:
-                raise VeyronInternal(f"request_{op} failed: {resp.error}")
+                raise VynkorInternal(f"request_{op} failed: {resp.error}")
         except ImportError:
             if resp.status != 1:
-                raise VeyronInternal(f"request_{op} failed: {resp.error}")
+                raise VynkorInternal(f"request_{op} failed: {resp.error}")
     try:
         value = json.loads(resp.data_json) if resp.data_json else {}
     except Exception as e:
-        raise VeyronInternal(f"invalid pending response: {e}") from e
+        raise VynkorInternal(f"invalid pending response: {e}") from e
     pid = value.get("pending_id") if isinstance(value, dict) else None
     if not isinstance(pid, str) or not pid:
-        raise VeyronInternal("pending response missing pending_id")
+        raise VynkorInternal("pending response missing pending_id")
     return pid
 
 
@@ -453,10 +453,10 @@ async def send_confirmation(client, op: str, pending_id: str):
     Invokes ``confirm_<op>`` with ``pending_id``. Returns the provider's
     ``ActionResponse`` as-is — inspect ``.status`` / ``.error`` yourself.
     """
-    from .errors import VeyronInternal
+    from .errors import VynkorInternal
 
     try:
         params = json.dumps({"pending_id": pending_id}).encode()
     except Exception as e:
-        raise VeyronInternal(f"failed to encode confirm params: {e}") from e
+        raise VynkorInternal(f"failed to encode confirm params: {e}") from e
     return await client.send_action(f"confirm_{op}", params, 0)

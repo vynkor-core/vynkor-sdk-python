@@ -7,31 +7,31 @@ so callers can catch the base or a specific variant.
 
 
 class VynkorError(Exception):
-    """Base class for every Veyron SDK error (mirrors `WireError`)."""
+    """Base class for every Vynkor SDK error (mirrors `WireError`)."""
 
 
-class VeyronIoError(VynkorError):
+class VynkorIoError(VynkorError):
     """Underlying I/O failure (mirrors `WireError::Io`)."""
 
 
-class VeyronProtoError(VynkorError):
+class VynkorProtoError(VynkorError):
     """Protobuf encode/decode failure (mirrors `WireError::Proto`)."""
 
 
-class VeyronFrameMagicMismatch(VynkorError):
+class VynkorFrameMagicMismatch(VynkorError):
     """Frame magic != 0x5652 (mirrors `WireError::FrameMagicMismatch`)."""
 
 
-class VeyronFrameCrcMismatch(VynkorError):
+class VynkorFrameCrcMismatch(VynkorError):
     """Frame CRC32 mismatch (mirrors `WireError::FrameCrcMismatch`)."""
 
 
-class VeyronFrameReadTimeout(VynkorError):
+class VynkorFrameReadTimeout(VynkorError):
     """Timed out reading a frame body once it started (mirrors
     `WireError::FrameReadTimeout`)."""
 
 
-class VeyronPayloadTooLarge(VynkorError):
+class VynkorPayloadTooLarge(VynkorError):
     """Payload exceeds the protocol limit (mirrors `WireError::PayloadTooLarge`)."""
 
     def __init__(self, size: int):
@@ -39,14 +39,14 @@ class VeyronPayloadTooLarge(VynkorError):
         super().__init__(f"payload too large: {size} bytes")
 
 
-class VeyronTimeout(VynkorError):
+class VynkorTimeout(VynkorError):
     """Operation timed out (mirrors `WireError::Timeout`)."""
 
     def __init__(self, message: str = "operation timed out"):
         super().__init__(message)
 
 
-class VeyronPermissionDenied(VynkorError):
+class VynkorPermissionDenied(VynkorError):
     """Permission denied; message carries the reason (mirrors
     `WireError::PermissionDenied`)."""
 
@@ -54,7 +54,7 @@ class VeyronPermissionDenied(VynkorError):
         super().__init__(f"permission denied: {message}")
 
 
-class VeyronInternal(VynkorError):
+class VynkorInternal(VynkorError):
     """Internal/protocol error; message carries details (mirrors
     `WireError::Internal`)."""
 
@@ -64,13 +64,13 @@ class VeyronInternal(VynkorError):
 
 __all__ = [
     "VynkorError",
-    "VeyronIoError",
-    "VeyronProtoError",
-    "VeyronFrameMagicMismatch",
-    "VeyronFrameCrcMismatch",
-    "VeyronFrameReadTimeout",
-    "VeyronPayloadTooLarge",
-    "VeyronTimeout",
-    "VeyronPermissionDenied",
-    "VeyronInternal",
+    "VynkorIoError",
+    "VynkorProtoError",
+    "VynkorFrameMagicMismatch",
+    "VynkorFrameCrcMismatch",
+    "VynkorFrameReadTimeout",
+    "VynkorPayloadTooLarge",
+    "VynkorTimeout",
+    "VynkorPermissionDenied",
+    "VynkorInternal",
 ]
