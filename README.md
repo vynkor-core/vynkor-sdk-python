@@ -1,4 +1,4 @@
-# vynkor-sdk
+# vynkor-sdk-python
 
 Python SDK for writing [Vynkor](https://github.com/vynkor-core/vynkor) plugins.
 
