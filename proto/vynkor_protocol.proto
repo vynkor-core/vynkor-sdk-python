@@ -166,15 +166,15 @@ message PluginManifest {
   // D-01 (v1.6): install filtering + structured tool schema. Both additive;
   // the kernel stores/serves them, never interprets (dumb core).
   repeated string  platforms    = 8;  // install filtering, e.g. "android-14+", "macos", "linux"
-  repeated ActionSpec action_specs = 9;  // tool schema for the AI (D-08); name must match actions[]
+  repeated ActionSpec action_specs = 9;  // per-action capability descriptor (D-08); name must match actions[]
 }
 
-// D-01 (v1.6): structured tool spec for AI plugins — data only, served from
-// the registry (D-08); the kernel does not parse params_schema. name must
-// match an entry in actions[] so the router stays on the string allowlist.
+// D-01 (v1.6): per-action capability spec — data only, served from the
+// registry (D-08); the kernel does not parse params_schema. name must match
+// an entry in actions[] so the router stays on the string allowlist.
 message ActionSpec {
   string  name                  = 1;
-  string  description           = 2;  // for the AI; trusted manifest data
+  string  description           = 2;  // trusted manifest data
   string  params_schema         = 3;  // JSON Schema of params_json
   ActionRisk  risk              = 4;
   bool    requires_confirmation = 5;  // high-risk: user approval gate (D-09)
