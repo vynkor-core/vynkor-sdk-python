@@ -74,7 +74,7 @@ gate = ConfirmationGate(
     "Move money between accounts",
     '{"type":"object"}',
     ActionRisk.ACTION_RISK_CRITICAL,
-    ["device.phone"],      # only the user's device may confirm
+    ["phone-1"],           # only the user's paired device may confirm
 )
 actions, action_specs = gate.manifest_entries()
 # merge into PluginManifest(actions=actions, action_specs=action_specs, ...)
@@ -88,8 +88,10 @@ resp = await send_confirmation(client, "transfer", pending_id)
 ```
 
 Pending requests expire (default 5 minutes, configurable via
-`with_pending_ttl`), and the allowlist supports `prefix.*` globs so
-`"device.*"` covers every device bridge mirror. See `vynkor/confirmation_gate.py`
+`with_pending_ttl`), and the allowlist supports `prefix.*` globs. A paired
+device registers as its `<device_id>` (e.g. `phone-1`); legacy per-capability
+registrations are `<device_id>.<cap>`. `"phone-1.*"` covers every
+`phone-1.<cap>` but not the bare `phone-1` — list both to cover either style. See `vynkor/confirmation_gate.py`
 for the full API.
 
 ### Concurrent message loop (hot-path plugins)
@@ -151,8 +153,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-JWT credentials come from the same env vars as the UDS path — the token is
-presented both in the `Sec-WebSocket-Protocol: vynkor, <jwt>` handshake header
+A **paired device** (CD-02 / E-01) sets `VYN_DEVICE_ID` + `VYN_DEVICE_SECRET`
+from `vyn device connect`: registration carries `device_id` and the frame MAC
+keys off the device's own secret, so the host master `jwt_secret` never
+leaves the host. `run_ws` raises on a half-set pair, or on `VYN_JWT_SECRET`
+set next to a device pair; without a device pair the legacy `VYN_JWT_SECRET`
+path applies (`resolve_ws_credentials`, same policy as the Rust and C++
+SDKs). The token is presented both in the `Sec-WebSocket-Protocol: vynkor, <jwt>` handshake header
 and in the registration envelope. Registration, frame-MAC enable and reconnect
 behave exactly like the UDS client. Two differences are dictated by the
 gateway (R5-03): outbound frames are never zstd-compressed and never
@@ -166,6 +173,8 @@ passes unchanged.
 | `VYN_SOCKET_PATH` | Kernel UDS path. Default: `XDG_RUNTIME_DIR` → `/run/user/<uid>` → `~/.local/state/vyn/run` (never shared `/tmp`). |
 | `VYN_JWT_TOKEN`   | JWT presented at registration (required on secured kernels).   |
 | `VYN_JWT_SECRET`  | Shared secret; enables per-frame HMAC-SHA256 tags after registration. |
+| `VYN_DEVICE_ID`   | Paired device id (`run_ws` only, E-01). Requires `VYN_DEVICE_SECRET`. |
+| `VYN_DEVICE_SECRET` | Paired device's own MAC secret (`run_ws` only, E-01); replaces `VYN_JWT_SECRET`. |
 
 ## Protocol coverage
 
@@ -217,8 +226,9 @@ await client.close_session(action_id, "done")
 Over WebSocket, connect with the gateway URL instead — same API afterwards:
 
 ```python
-client = await VynkorClient.connect_ws("ws://host:8080/ws", jwt, secret)
-ack = await client.register_with_token("device.geo", manifest, jwt)
+# paired device (E-01): token + device_secret from `vyn device connect`
+client = await VynkorClient.connect_ws_device("ws://host:8080/ws", jwt, "phone-1", device_secret)
+ack = await client.register_with_token("phone-1", manifest, jwt)
 ```
 
 `publish_event` requires `PERMISSION_EVENT_PUBLISH`; `timeout_ms == 0` uses

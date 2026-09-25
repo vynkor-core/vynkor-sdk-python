@@ -5,7 +5,8 @@ Speaks the full Vynkor wire protocol over two transports:
 - **UDS** (default) — Unix domain socket via :meth:`VynkorClient.connect` /
   :meth:`VynkorClient.connect_with_secret`.
 - **WebSocket** — the kernel's WS gateway (``ws://host:port/ws``) via
-  :meth:`VynkorClient.connect_ws`, for remote devices (D-05). Registration,
+  :meth:`VynkorClient.connect_ws`, for remote devices (D-05); paired devices
+  use :meth:`VynkorClient.connect_ws_device` with their own secret (E-01). Registration,
   frame-MAC enable and reconnect mirror the UDS client exactly; the only
   differences are dictated by the gateway (R5-03): outbound frames are never
   zstd-compressed and never fragmented, while ``FLAG_RAW_BINARY`` passes
@@ -109,6 +110,9 @@ class VynkorClient:
     def __init__(self, socket_path: str = "", secret: Optional[bytes] = None):
         self.socket_path = socket_path
         self._secret = secret
+        # sent as PluginRegister.device_id; set => kernel keys the MAC off the
+        # device's credential row, not the master secret (E-01)
+        self.device_id: Optional[str] = None
         self.session_key: Optional[bytes] = None
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -219,6 +223,28 @@ class VynkorClient:
         client._ws_protocol = protocol  # type: ignore[attr-defined]
         return client
 
+    @classmethod
+    async def connect_ws_device(
+        cls, url: str, jwt_token: str, device_id: str, device_secret: bytes
+    ) -> "VynkorClient":
+        """Connect a paired remote device (CD-02 / E-01) to the WS gateway.
+
+        ``jwt_token`` and ``device_secret`` are the pair issued by
+        ``vyn device connect``; the host master ``jwt_secret`` never leaves
+        the host. Registration carries ``device_id``, so the kernel checks the
+        token's ``sub`` against it and keys the frame MAC off
+        ``device_secret``.
+        """
+        client = await cls.connect_ws(url, jwt_token, device_secret)
+        return client.with_device_id(device_id)
+
+    def with_device_id(self, device_id: str) -> "VynkorClient":
+        """Mark this connection as a paired device: registration sends
+        ``device_id``, and the secret given at connect time must be that
+        device's own secret, not the host ``jwt_secret``."""
+        self.device_id = device_id
+        return self
+
     async def close(self) -> None:
         if self._transport == "ws" and self._ws is not None:
             try:
@@ -266,7 +292,12 @@ class VynkorClient:
         jwt_token: str = "",
     ) -> PluginRegisterAck:
         self.plugin_id = plugin_id
-        reg = PluginRegister(plugin_id=plugin_id, version=version, jwt_token=jwt_token)
+        reg = PluginRegister(
+            plugin_id=plugin_id,
+            version=version,
+            jwt_token=jwt_token,
+            device_id=self.device_id or "",
+        )
         if manifest is not None:
             reg.manifest.CopyFrom(manifest)
         env = Envelope()

@@ -6,7 +6,8 @@ import asyncio
 import pytest
 
 from vynkor import VynkorClient
-from vynkor.plugin import Plugin
+from vynkor.errors import VynkorInternal
+from vynkor.plugin import Plugin, WsCredentials, resolve_ws_credentials
 from vynkor.vynkor_protocol_pb2 import Envelope, PluginRegisterAck
 
 
@@ -42,7 +43,13 @@ class _FakeClient:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for var in ("VYN_JWT_TOKEN", "VYN_JWT_SECRET", "VYN_SOCKET_PATH"):
+    for var in (
+        "VYN_JWT_TOKEN",
+        "VYN_JWT_SECRET",
+        "VYN_SOCKET_PATH",
+        "VYN_DEVICE_ID",
+        "VYN_DEVICE_SECRET",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -98,3 +105,73 @@ def test_run_with_passes_env_token_and_secret_through(monkeypatch):
     assert fake.register_args[0] == "env-test-plugin"
     assert fake.register_args[1] == "1.0.0"
     assert fake.register_args[3] == "tok-123"
+
+
+# ── resolve_ws_credentials (CD-02 / E-01) — same policy as Rust/C++ ──
+
+
+def test_device_pair_selects_device_credentials():
+    assert resolve_ws_credentials("phone-1", "dev-secret", None) == WsCredentials(
+        "device", "phone-1", b"dev-secret"
+    )
+
+
+def test_master_secret_alone_is_shared():
+    assert resolve_ws_credentials(None, None, "master") == WsCredentials(
+        "shared", secret=b"master"
+    )
+
+
+def test_nothing_set_is_unsecured():
+    # env vars set to "" count as unset
+    assert resolve_ws_credentials(None, "", "") == WsCredentials("none")
+
+
+def test_master_secret_next_to_device_pair_is_rejected():
+    with pytest.raises(VynkorInternal, match="VYN_JWT_SECRET"):
+        resolve_ws_credentials("phone-1", "dev-secret", "master")
+
+
+@pytest.mark.parametrize("device_id,device_secret", [("phone-1", None), (None, "dev-secret")])
+@pytest.mark.parametrize("jwt_secret", [None, "master"])
+def test_half_device_pair_is_rejected_even_with_master_fallback(
+    device_id, device_secret, jwt_secret
+):
+    with pytest.raises(VynkorInternal):
+        resolve_ws_credentials(device_id, device_secret, jwt_secret)
+
+
+def test_run_ws_uses_device_credentials_from_env(monkeypatch):
+    monkeypatch.setenv("VYN_JWT_TOKEN", "dev-tok")
+    monkeypatch.setenv("VYN_DEVICE_ID", "phone-1")
+    monkeypatch.setenv("VYN_DEVICE_SECRET", "dev-secret")
+    fake = _FakeClient()
+    captured = {}
+
+    async def fake_device(cls, url, jwt_token, device_id, device_secret):
+        captured.update(url=url, token=jwt_token, device_id=device_id, secret=device_secret)
+        return fake
+
+    async def no_shared(cls, *args, **kwargs):
+        raise AssertionError("run_ws must not take the shared-secret path")
+
+    monkeypatch.setattr(VynkorClient, "connect_ws_device", classmethod(fake_device))
+    monkeypatch.setattr(VynkorClient, "connect_ws", classmethod(no_shared))
+
+    asyncio.run(_NoopPlugin().run_ws("ws://host:8080/ws"))
+
+    assert captured == {
+        "url": "ws://host:8080/ws",
+        "token": "dev-tok",
+        "device_id": "phone-1",
+        "secret": b"dev-secret",
+    }
+    assert fake.register_args[3] == "dev-tok"
+
+
+def test_run_ws_refuses_master_secret_on_device(monkeypatch):
+    monkeypatch.setenv("VYN_DEVICE_ID", "phone-1")
+    monkeypatch.setenv("VYN_DEVICE_SECRET", "dev-secret")
+    monkeypatch.setenv("VYN_JWT_SECRET", "master")
+    with pytest.raises(VynkorInternal):
+        asyncio.run(_NoopPlugin().run_ws("ws://host:8080/ws"))
