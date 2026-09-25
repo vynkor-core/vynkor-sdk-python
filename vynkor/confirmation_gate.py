@@ -27,15 +27,18 @@ Provider side — one-liner::
         "Move money between accounts",
         '{"type":"object"}',
         ActionRisk.ACTION_RISK_CRITICAL,
-        ["device.phone"],  # only the user's device may confirm
+        ["phone-1"],  # only the user's paired device may confirm
     )
     actions, action_specs = gate.manifest_entries()
     # merge into PluginManifest(actions=actions, action_specs=action_specs, ...)
 
     # in on_action: envelopes = await gate.route(req, lambda params: execute(params))
 
-The allowlist supports a trailing ``.*`` suffix: ``"device.*"`` matches any
-caller whose plugin id starts with ``device.``.
+Callers are kernel-stamped plugin ids. A paired device registers as its
+``<device_id>`` (single-WS, e.g. ``phone-1``); legacy per-capability
+registrations show up as ``<device_id>.<cap>``. The allowlist supports a
+trailing ``.*`` suffix: ``"phone-1.*"`` matches every ``phone-1.<cap>`` but
+not the bare ``phone-1`` — list both to cover either registration style.
 
 Caller side::
 

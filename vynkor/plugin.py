@@ -8,10 +8,11 @@ Mirrors ``vynkor-sdk/src/plugin.rs`` 1:1.
 import asyncio
 import os
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Literal, Optional
 
 from .client import VynkorClient
-from .errors import VynkorError, VynkorPermissionDenied
+from .errors import VynkorError, VynkorInternal, VynkorPermissionDenied
 from .vynkor_protocol_pb2 import Envelope, Event, PluginManifest, Pong
 
 
@@ -121,17 +122,27 @@ class Plugin:
     async def run_ws(self, url: str) -> None:
         """Connect to a kernel WebSocket gateway (D-05), register and serve
         until shutdown — the WS mirror of :meth:`run_with` for remote devices.
-        JWT credentials come from the same env vars as the UDS path
-        (``VYN_JWT_TOKEN`` / ``VYN_JWT_SECRET``); the token is presented both
-        in the ``Sec-WebSocket-Protocol`` handshake header and in the
+        A paired device (E-01) sets ``VYN_DEVICE_ID`` + ``VYN_DEVICE_SECRET``
+        (from ``vyn device connect``); without them the legacy
+        ``VYN_JWT_SECRET`` path applies — see :func:`resolve_ws_credentials`
+        for the strict policy. The token (``VYN_JWT_TOKEN``) is presented
+        both in the ``Sec-WebSocket-Protocol`` handshake header and in the
         registration envelope.
 
         Mirrors ``Plugin::run_ws`` in the Rust SDK.
         """
         token = os.environ.get("VYN_JWT_TOKEN", "")
-        secret = os.environ.get("VYN_JWT_SECRET")
-        secret_bytes = secret.encode() if secret else None
-        client = await VynkorClient.connect_ws(url, token, secret_bytes)
+        creds = resolve_ws_credentials(
+            os.environ.get("VYN_DEVICE_ID"),
+            os.environ.get("VYN_DEVICE_SECRET"),
+            os.environ.get("VYN_JWT_SECRET"),
+        )
+        if creds.kind == "device":
+            client = await VynkorClient.connect_ws_device(
+                url, token, creds.device_id, creds.secret
+            )
+        else:
+            client = await VynkorClient.connect_ws(url, token, creds.secret)
         try:
             await self.serve(client, token)
         finally:
@@ -201,3 +212,45 @@ class Plugin:
             await self.on_shutdown()
         if handler_err is not None:
             raise handler_err
+
+
+@dataclass(frozen=True)
+class WsCredentials:
+    """MAC credentials for :meth:`Plugin.run_ws` (CD-02 / E-01)."""
+
+    # "device": paired device, register with device_id, MAC off secret
+    # "shared": legacy host master jwt_secret
+    # "none":   unsecured kernel (allow_no_auth)
+    kind: Literal["device", "shared", "none"]
+    device_id: str = ""
+    secret: Optional[bytes] = None
+
+
+def resolve_ws_credentials(
+    device_id: Optional[str],
+    device_secret: Optional[str],
+    jwt_secret: Optional[str],
+) -> WsCredentials:
+    """Pick ``run_ws`` credentials from ``VYN_DEVICE_ID`` /
+    ``VYN_DEVICE_SECRET`` / ``VYN_JWT_SECRET`` values (None or "" = unset).
+
+    Strict on purpose, same policy as the Rust and C++ SDKs: a half-set
+    device pair, or a master secret next to a device pair, raises
+    :class:`VynkorInternal` instead of silently falling back — the kernel
+    would otherwise reject later with an opaque "token plugin_id mismatch".
+    """
+    if device_id and device_secret:
+        # E-01: the master secret must never reach a paired device
+        if jwt_secret:
+            raise VynkorInternal(
+                "VYN_JWT_SECRET is set alongside VYN_DEVICE_ID/VYN_DEVICE_SECRET — "
+                "a paired device must not hold the host master secret; unset it"
+            )
+        return WsCredentials("device", device_id, device_secret.encode())
+    if device_id:
+        raise VynkorInternal("VYN_DEVICE_ID is set without VYN_DEVICE_SECRET")
+    if device_secret:
+        raise VynkorInternal("VYN_DEVICE_SECRET is set without VYN_DEVICE_ID")
+    if jwt_secret:
+        return WsCredentials("shared", secret=jwt_secret.encode())
+    return WsCredentials("none")
