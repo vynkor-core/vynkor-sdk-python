@@ -175,7 +175,7 @@ class VynkorClient:
 
     @classmethod
     async def connect_ws(
-        cls, url: str, jwt_token: str = "", secret: Optional[bytes] = None
+        cls, url: str, jwt_token: str = "", secret: Optional[bytes] = None, **connect_kwargs
     ) -> "VynkorClient":
         """Connect to the kernel's WebSocket gateway (D-05). ``url`` is a
         ``ws://`` or ``wss://`` endpoint, normally ``ws://<host>:<port>/ws``.
@@ -188,6 +188,10 @@ class VynkorClient:
         non-empty token is required on secured kernels. ``secret`` enables
         frame MACs after registration, exactly like
         :meth:`connect_with_secret` on UDS.
+
+        Extra keyword arguments (``ssl=``, ``max_size=``, ...) are passed to
+        ``websockets.connect`` — e.g. an ``ssl.SSLContext`` pinned to the
+        kernel's self-signed certificate for ``wss://``.
 
         On a dropped connection the client is left in its last state;
         reconnect by calling ``connect_ws`` again and re-registering — the
@@ -202,19 +206,14 @@ class VynkorClient:
                 "websockets package required for WebSocket transport: pip install vynkor-sdk[websockets] or websockets>=12"
             ) from e
 
-        protocol = "vynkor" if not jwt_token else f"vynkor, {jwt_token}"
-
-        # websockets 12+ uses additional_headers, older uses extra_headers
-        connect_kwargs: dict = {}
-        # Try modern API first
-        try:
-            ws = await websockets.connect(url, additional_headers={"Sec-WebSocket-Protocol": protocol})  # type: ignore[call-arg]
-        except TypeError:
-            try:
-                ws = await websockets.connect(url, extra_headers={"Sec-WebSocket-Protocol": protocol})  # type: ignore[call-arg]
-            except TypeError:
-                # Fallback: websockets 13+ may use different param
-                ws = await websockets.connect(url)  # type: ignore[call-arg]
+        # Offer the subprotocols through the `subprotocols` option (not a raw
+        # Sec-WebSocket-Protocol header): the library validates the server's
+        # selected subprotocol against this list and otherwise raises
+        # NegotiationError("no subprotocols supported"). On the wire this is the
+        # same `vynkor, <jwt>` header the gateway expects.
+        subprotocols = ["vynkor"] + ([jwt_token] if jwt_token else [])
+        protocol = ", ".join(subprotocols)
+        ws = await websockets.connect(url, subprotocols=subprotocols, **connect_kwargs)
 
         client = cls(url, secret=secret)
         client._ws = ws
@@ -225,7 +224,7 @@ class VynkorClient:
 
     @classmethod
     async def connect_ws_device(
-        cls, url: str, jwt_token: str, device_id: str, device_secret: bytes
+        cls, url: str, jwt_token: str, device_id: str, device_secret: bytes, **connect_kwargs
     ) -> "VynkorClient":
         """Connect a paired remote device (CD-02 / E-01) to the WS gateway.
 
@@ -234,8 +233,13 @@ class VynkorClient:
         the host. Registration carries ``device_id``, so the kernel checks the
         token's ``sub`` against it and keys the frame MAC off
         ``device_secret``.
+
+        ``device_secret`` is the secret string exactly as printed in the pairing
+        payload, as ASCII bytes (``secret_str.encode()``) — do NOT hex-decode it,
+        or the kernel drops the connection on the first MAC'd frame.
+        Extra keyword arguments go to ``websockets.connect`` (see :meth:`connect_ws`).
         """
-        client = await cls.connect_ws(url, jwt_token, device_secret)
+        client = await cls.connect_ws(url, jwt_token, device_secret, **connect_kwargs)
         return client.with_device_id(device_id)
 
     def with_device_id(self, device_id: str) -> "VynkorClient":
